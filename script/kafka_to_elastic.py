@@ -3,6 +3,8 @@ import json
 import datetime
 import base64
 import decimal
+import signal
+#import atexit
 
 from time import sleep
 from dotenv import load_dotenv
@@ -21,6 +23,37 @@ os.environ[
 
 # create a Spark session
 spark = SparkSession.builder.appName("kafka_elastic_test1").getOrCreate()
+
+def cleanup():
+    # Stop the writeStream operation
+    try:
+        query_account.stop()
+        query_transaction.stop()
+    except Exception as e:
+        print("Error occurred while stopping the query:\n", str(e))
+    finally:
+        # Stop the SparkSession
+        spark.stop()
+
+    # Stop the SparkSession and perform cleanup before exiting
+    #spark.stop()
+    print("Cleaning up resources...")
+
+# Define a signal handler function
+def signal_handler(signal, frame):
+    # Cleaning up resources...
+    cleanup()
+
+    print('Exiting gracefully...')
+    # Perform any cleanup or specific actions here
+    exit(0)
+
+# Set the signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
+# Register the cleanup function to be called at program exit
+#atexit.register(cleanup)
+
 
 # create a Kafka stream for transaction
 df_transaction_stream = (
@@ -236,9 +269,7 @@ value_df_account = df_account_stream.selectExpr("CAST(value AS STRING)")
 query_account = value_df_account.writeStream.foreachBatch(write_to_es_account).start()
 
 value_df_transaction = df_transaction_stream.selectExpr("CAST(value AS STRING)")
-query_transaction = value_df_transaction.writeStream.foreachBatch(
-    write_to_es_transaction
-).start()
+query_transaction = value_df_transaction.writeStream.foreachBatch(write_to_es_transaction).start()
 
 # Wait for the stream to finish
 query_account.awaitTermination()
