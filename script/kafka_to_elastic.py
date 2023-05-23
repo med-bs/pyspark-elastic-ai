@@ -263,6 +263,9 @@ def write_to_es_account(df_a, epoch_id):
             # new_row_account does not exist in acount_df, so concatenate the two DataFrames
             account_df = account_df.union(new_row_account)
 
+print()
+print("Start streaming...")
+print()
 
 # Call the write_to_es function on each micro-batch of data
 value_df_account = df_account_stream.selectExpr("CAST(value AS STRING)")
