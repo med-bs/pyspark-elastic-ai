@@ -48,7 +48,7 @@ redis_client_acc = redis.Redis(host=redis_host, port=redis_port, db= redis_db_ac
 
 # Define the Elasticsearch index name
 es_index = os.environ.get("es_index")
-es_port = os.environ.get("es_port")
+es_port = int (os.environ.get("es_port"))
 es_host = os.environ.get("es_host")
 
 # Create an Elasticsearch client
@@ -297,7 +297,7 @@ def send_email(sender, recipient, subject, message):
     msg['To'] = recipient
 
     # SMTP server settings for Outlook
-    smtp_host = os.environ.get("smtp_host")m
+    smtp_host = os.environ.get("smtp_host")
     smtp_port = os.environ.get("smtp_port")
     smtp_username = os.environ.get("smtp_username")
     smtp_password = os.environ.get("smtp_password")
@@ -404,7 +404,7 @@ def write_to_es_transaction(df_t, epoch_id):
             dic_trans['id'] = value_dict_transaction['payload']['after']['id']
                 
             # save this transacton in redis
-            add_transaction_to_history(value_dict_transaction['payload']['after']['id'], dic_trans)
+            add_transaction_to_history(dic_trans["id"], dic_trans)
                 
             dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
             dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
