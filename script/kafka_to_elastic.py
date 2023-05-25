@@ -38,8 +38,11 @@ password = os.environ.get("PASSWORD")
 redis_host = "redis"
 redis_port = 6379
 redis_db_tr = 0
+redis_db_acc = 1
+
 
 redis_client_tr = redis.Redis(host=redis_host, port=redis_port, db= redis_db_tr)
+redis_client_acc = redis.Redis(host=redis_host, port=redis_port, db= redis_db_acc)
 
 # Define the Elasticsearch index name
 es_index = "transactions_index"
@@ -53,7 +56,7 @@ es = Elasticsearch(
 )
 
 # mllib ia model
-lr_model = LogisticRegressionModel.load("../lr_ml")
+lr_model = LogisticRegressionModel.load("./lr_ml")
 
 def cleanup():
     # Stop the writeStream operation
@@ -96,7 +99,6 @@ df_account_stream = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", "kafka:9092")
     .option("subscribe", "dbserver1.fineract_default.m_savings_account")
-    .option("startingOffsets", "earliest")
     .load()
 )
 
@@ -115,14 +117,12 @@ schema_transaction = StructType(
 )
 
 # Define the schema for the DataFrame
-schema_account = StructType(
-    [
-        StructField("customer-id", LongType(), True),
-        StructField("account-id", LongType(), True),
-    ]
-)
+schema_account = StructType([
+    StructField("customer_id",  LongType(), True),
+    StructField("account_id", LongType(), True)
+])
 
-account_df = spark.createDataFrame([], schema=schema_account)
+account_df = spark.createDataFrame([(-1,-1),], schema=schema_account)
 
 dic_trans = {}
 
@@ -212,6 +212,29 @@ def get_transactions_history():
     # Create DataFrame from RDD
     return spark.createDataFrame(rdd)
 
+def add_account_to_cache(key, data):
+        # Serialize the dictionary into a JSON string
+        data_json = json.dumps(data)
+
+        # Save the serialized data in Redis
+        redis_client_acc.set(key, data_json)
+        
+        # Set the expiration time for the key
+        redis_client_acc.expire(key, 604800) # 1 week
+
+def get_account_from_cache(key):
+    
+    data = {}
+    # Retrieve values for each key
+    value = redis_client_acc.get(key)
+    data[key] = json.loads(value.decode("utf-8"))
+
+    # Convert list of dictionaries to RDD
+    rdd = spark.sparkContext.parallelize(list(data.values()))
+
+    # Create DataFrame from RDD
+    return spark.createDataFrame(rdd)
+
 def getDecimalFromKafka(encoded):
 
     # Decode the Base64 encoded string and create a BigInteger from it
@@ -265,7 +288,7 @@ def get_ml_transaction_input_byIds(account_id, customer_id):
     
     return dict_ml
 
-def predict_isfraude(dic_trans):
+def predict_isfraud(dic_trans):
     
     # get input variable for ml
     ml_input_var = get_ml_transaction_input_byIds( dic_trans['account_id'], dic_trans['customer_id'])
@@ -297,57 +320,58 @@ def predict_isfraude(dic_trans):
     return "valid" if is_fraude == 0.0 else "fraudulent"
 
 def write_to_es_transaction(df_t, epoch_id):
+
+    global account_df
     
     row_transactions = df_t.collect()
     
     for row_transaction in row_transactions:
     
-      # if(row_transaction):
-            value_dict_transaction = json.loads(row_transaction.value)
+        value_dict_transaction = json.loads(row_transaction.value)
             
-            if value_dict_transaction['payload']['before'] == None :
+        if value_dict_transaction['payload']['before'] == None :
                 
-                timestamp = value_dict_transaction['payload']['after']['created_date']/1000
-                # convert Unix timestamp to a datetime object
-                dt = datetime.datetime.fromtimestamp(timestamp)
-                # format datetime object as "yyyy-mm-dd hh:mm:ss"
-                dic_trans['datetime'] = dt.strftime("%Y-%m-%d %H:%M:%S")
-                formatted_date_es = dt.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+            timestamp = value_dict_transaction['payload']['after']['created_date']/1000
+            # convert Unix timestamp to a datetime object
+            dt = datetime.datetime.fromtimestamp(timestamp)
+            # format datetime object as "yyyy-mm-dd hh:mm:ss"
+            dic_trans['datetime'] = dt.strftime("%Y-%m-%d %H:%M:%S")
+            formatted_date_es = dt.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         
-                dic_trans['account_id'] = value_dict_transaction['payload']['after']['savings_account_id']
+            dic_trans['account_id'] = value_dict_transaction['payload']['after']['savings_account_id']
         
-                while account_df.filter(col("account-id") == dic_trans['account_id']).count() == 0:
-                    # Wait for 0.1 second before checking again
-                    sleep(0.1)
+            while account_df.filter(col("account_id") == dic_trans['account_id']).count() == 0:
+                # Wait for 0.01 second before checking again
+                sleep(0.01)
+                account_df = get_account_from_cache(dic_trans['account_id'])
         
-                # Code to execute after the condition becomes true
-                # Filter the DataFrame to get rows where "account-id" is in account_df["account-id"]
-                filtered_account_df = account_df.filter(account_df["account-id"] == dic_trans['account_id'])
-                # Select the "customer-id" column from the filtered DataFrame
-                dic_trans['customer_id'] = filtered_account_df.select("customer-id").collect()[0][0]
-                op_type = "DEBIT" if value_dict_transaction['payload']['after']['transaction_type_enum'] == 2 else "CREDIT"  
+            # Code to execute after the condition becomes true
+            # Filter the DataFrame to get rows where "account-id" is in account_df["account-id"]
+            filtered_account_df = account_df.filter(account_df["account_id"] == dic_trans['account_id'])
+            # Select the "customer-id" column from the filtered DataFrame
+            dic_trans['customer_id'] = filtered_account_df.select("customer_id").collect()[0][0]
                 
-                dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
+            op_type = "DEBIT" if value_dict_transaction['payload']['after']['transaction_type_enum'] == 2 else "CREDIT"  
                 
-                # save this transacton in redis
-                add_transaction_to_history(value_dict_transaction['payload']['after']['id'], dic_trans)
+            dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
                 
-                dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
-                dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
+            # save this transacton in redis
+            add_transaction_to_history(value_dict_transaction['payload']['after']['id'], dic_trans)
                 
-                new_row_transaction = spark.createDataFrame([(dic_trans['account_id'],
+            dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
+            dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
+                
+            new_row_transaction = spark.createDataFrame([(dic_trans['account_id'],
                                                       dic_trans['amount'],
                                                       dic_trans['customer_id'],
                                                       dic_trans['datetime'],
-                                                     # date_format(from_unixtime("timestamp"), "yyyy-MM-dd HH:mm:ss"),
-                                                      predict_isfraude(dic_trans),#-----test after will be predected by ML
+                                                      predict_isfraud(dic_trans), #-----test after will be predected by ML
                                                       value_dict_transaction['payload']['after']['id'],
                                                       op_type,
                                                       formatted_date_es,
                                                      )], schema=schema_transaction)
                         
-                write_to_es(new_row_transaction)
-
+            write_to_es(new_row_transaction)
 
 def write_to_es_account(df_a, epoch_id):
 
@@ -357,22 +381,13 @@ def write_to_es_account(df_a, epoch_id):
 
     for row_account in row_accounts:
 
-        # if(row_account):
+        dict_account = {}
         value_dict_account = json.loads(row_account.value)
-        new_row_account = spark.createDataFrame(
-            [
-                (
-                    value_dict_account["payload"]["after"]["client_id"],
-                    value_dict_account["payload"]["after"]["id"],
-                )
-            ],
-            schema=schema_account,
-        )
-
-        # Check if new_row_account is already present in acount_df
-        if account_df.subtract(new_row_account).count() == account_df.count():
-            # new_row_account does not exist in acount_df, so concatenate the two DataFrames
-            account_df = account_df.union(new_row_account)
+        dict_account['customer_id'] = value_dict_account['payload']['after']['client_id']
+        dict_account['account_id'] = value_dict_account['payload']['after']['id']
+        
+        # add account to cache
+        add_account_to_cache(dict_account['account_id'], dict_account)
 
 print()
 print("Start streaming...")
