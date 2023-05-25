@@ -38,19 +38,18 @@ username = os.environ.get("USERNAME")
 password = os.environ.get("PASSWORD")
 
 # Create a Redis connection
-redis_host = "redis"
-redis_port = 6379
-redis_db_tr = 0
-redis_db_acc = 1
-
+redis_host = os.environ.get("redis_host")
+redis_port = os.environ.get("redis_port")
+redis_db_tr = os.environ.get("redis_db_tr")
+redis_db_acc = os.environ.get("redis_db_acc")
 
 redis_client_tr = redis.Redis(host=redis_host, port=redis_port, db= redis_db_tr)
 redis_client_acc = redis.Redis(host=redis_host, port=redis_port, db= redis_db_acc)
 
 # Define the Elasticsearch index name
-es_index = "transactions_index"
-es_port = 9200
-es_host = "elasticsearch"
+es_index = os.environ.get("es_index")
+es_port = os.environ.get("es_port")
+es_host = os.environ.get("es_host")
 
 # Create an Elasticsearch client
 es = Elasticsearch(
@@ -199,7 +198,6 @@ def add_transaction_to_history(key, data):
         redis_client_tr.expire(key, 7889229) # 3 months
 
 def get_transactions_history():
-
     # Get all keys in Redis
     all_keys = redis_client_tr.keys("*")
 
@@ -216,14 +214,14 @@ def get_transactions_history():
     return spark.createDataFrame(rdd)
 
 def add_account_to_cache(key, data):
-        # Serialize the dictionary into a JSON string
-        data_json = json.dumps(data)
+    # Serialize the dictionary into a JSON string
+    data_json = json.dumps(data)
 
-        # Save the serialized data in Redis
-        redis_client_acc.set(key, data_json)
+    # Save the serialized data in Redis
+    redis_client_acc.set(key, data_json)
         
-        # Set the expiration time for the key
-        redis_client_acc.expire(key, 604800) # 1 week
+    # Set the expiration time for the key
+    redis_client_acc.expire(key, 604800) # 1 week
 
 def get_account_from_cache(key):
     
@@ -298,11 +296,17 @@ def send_email(sender, recipient, subject, message):
     msg['From'] = sender
     msg['To'] = recipient
 
+    # SMTP server settings for Outlook
+    smtp_host = os.environ.get("smtp_host")m
+    smtp_port = os.environ.get("smtp_port")
+    smtp_username = os.environ.get("smtp_username")
+    smtp_password = os.environ.get("smtp_password")
+
     # Send the email
     try:
-        server = smtplib.SMTP(os.environ.get("smtp_host"), os.environ.get("smtp_port"))
+        server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls()
-        server.login(os.environ.get("smtp_username"), os.environ.get("smtp_password"))
+        server.login(smtp_username, smtp_password)
         server.sendmail(sender, recipient, msg.as_string())
         server.quit()
         print("Email sent successfully to admin!")
@@ -310,6 +314,10 @@ def send_email(sender, recipient, subject, message):
         print("An error occurred while sending the email:", str(e))
 
 def send_alert(dic_trans):
+
+    # Email addresses
+    sender = os.environ.get("sender")
+    recipient = os.environ.get("recipient")
 
     subject = ' Urgent: Potential Fraud Transaction Detected - Action Required'
     message = 'Dear Admin,\n\nWe have detected a suspicious transaction on a user\'s account on {datetime}.\nYour immediate attention to this matter is required. Please review the details provided below:\n\nTransaction ID: {id}\nCustomer ID: {customer_id}\nAccount ID: {account_id}\nAmount: ${amount}\nDate: {datetime}.\n\nWe kindly request that you take immediate action to thoroughly investigate and address this issue to prevent any further fraudulent activity.\nYour prompt response is greatly appreciated.\n\nBest regards,\nApach Finracte'.format(
@@ -320,10 +328,9 @@ def send_alert(dic_trans):
         amount=dic_trans['amount']
     )
 
-    send_email(os.environ.get("sender"), os.environ.get("recipient"), subject, message)
+    send_email(sender, recipient, subject, message)
 
-def predict_isfraud(dic_trans):
-    
+def predict_isfraud(dic_trans):  
     # get input variable for ml
     ml_input_var = get_ml_transaction_input_byIds( dic_trans['account_id'], dic_trans['customer_id'])
     
@@ -348,6 +355,7 @@ def predict_isfraud(dic_trans):
         ml_input_var['account_id_count_3month'],
         dic_trans['in_weekend'], dic_trans['at_night']
     ])
+
     data_vect = spark.createDataFrame([(dense_vector, ), ], ['features'])
     is_fraude = lr_model.transform(data_vect).select(['prediction']).collect()[0][0]
     
@@ -359,7 +367,6 @@ def predict_isfraud(dic_trans):
         return "fraudulent"
 
 def write_to_es_transaction(df_t, epoch_id):
-
     global account_df
     
     row_transactions = df_t.collect()
@@ -402,15 +409,19 @@ def write_to_es_transaction(df_t, epoch_id):
             dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
             dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
                 
-            new_row_transaction = spark.createDataFrame([(dic_trans['account_id'],
-                                                      dic_trans['amount'],
-                                                      dic_trans['customer_id'],
-                                                      dic_trans['datetime'],
-                                                      predict_isfraud(dic_trans), #-----test after will be predected by ML
-                                                      dic_trans['id'],
-                                                      op_type,
-                                                      formatted_date_es,
-                                                     )], schema=schema_transaction)
+            new_row_transaction = spark.createDataFrame(
+                [(
+                    dic_trans["account_id"],
+                    dic_trans["amount"],
+                    dic_trans["customer_id"],
+                    dic_trans["datetime"],
+                    predict_isfraud(dic_trans),  # -----test after will be predected by ML
+                    dic_trans["id"],
+                    op_type,
+                    formatted_date_es,
+                    )],
+                schema=schema_transaction,
+            )
                         
             write_to_es(new_row_transaction)
 
