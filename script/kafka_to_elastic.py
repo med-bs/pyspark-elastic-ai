@@ -13,6 +13,9 @@ from elasticsearch.exceptions import RequestError
 
 import redis
 
+import smtplib
+from email.mime.text import MIMEText
+
 from pyspark.sql import SparkSession, Window
 from pyspark.sql.types import StructType, StructField, LongType, DoubleType, StringType
 from pyspark.sql.functions import col, avg, count, current_date, date_sub
@@ -56,7 +59,7 @@ es = Elasticsearch(
 )
 
 # mllib ia model
-lr_model = LogisticRegressionModel.load("./lr_ml")
+lr_model = LogisticRegressionModel.load("lr_ml")
 
 def cleanup():
     # Stop the writeStream operation
@@ -288,6 +291,37 @@ def get_ml_transaction_input_byIds(account_id, customer_id):
     
     return dict_ml
 
+def send_email(sender, recipient, subject, message):
+
+    msg = MIMEText(message)
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = recipient
+
+    # Send the email
+    try:
+        server = smtplib.SMTP(os.environ.get("smtp_host"), os.environ.get("smtp_port"))
+        server.starttls()
+        server.login(os.environ.get("smtp_username"), os.environ.get("smtp_password"))
+        server.sendmail(sender, recipient, msg.as_string())
+        server.quit()
+        print("Email sent successfully to admin!")
+    except Exception as e:
+        print("An error occurred while sending the email:", str(e))
+
+def send_alert(dic_trans):
+
+    subject = ' Urgent: Potential Fraud Transaction Detected - Action Required'
+    message = 'Dear Admin,\n\nWe have detected a suspicious transaction on a user\'s account on {datetime}.\nYour immediate attention to this matter is required. Please review the details provided below:\n\nTransaction ID: {id}\nCustomer ID: {customer_id}\nAccount ID: {account_id}\nAmount: ${amount}\nDate: {datetime}.\n\nWe kindly request that you take immediate action to thoroughly investigate and address this issue to prevent any further fraudulent activity.\nYour prompt response is greatly appreciated.\n\nBest regards,\nApach Finracte'.format(
+        datetime=dic_trans['datetime'],
+        id=dic_trans['id'],
+        customer_id=dic_trans['customer_id'],
+        account_id=dic_trans['account_id'],
+        amount=dic_trans['amount']
+    )
+
+    send_email(os.environ.get("sender"), os.environ.get("recipient"), subject, message)
+
 def predict_isfraud(dic_trans):
     
     # get input variable for ml
@@ -317,7 +351,12 @@ def predict_isfraud(dic_trans):
     data_vect = spark.createDataFrame([(dense_vector, ), ], ['features'])
     is_fraude = lr_model.transform(data_vect).select(['prediction']).collect()[0][0]
     
-    return "valid" if is_fraude == 0.0 else "fraudulent"
+    if is_fraude == 0.0 :
+        return "valid"
+    else :
+        # send alert to admin when fraud detected
+        send_alert(dic_trans)
+        return "fraudulent"
 
 def write_to_es_transaction(df_t, epoch_id):
 
@@ -354,6 +393,8 @@ def write_to_es_transaction(df_t, epoch_id):
             op_type = "DEBIT" if value_dict_transaction['payload']['after']['transaction_type_enum'] == 2 else "CREDIT"  
                 
             dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
+
+            dic_trans['id'] = value_dict_transaction['payload']['after']['id']
                 
             # save this transacton in redis
             add_transaction_to_history(value_dict_transaction['payload']['after']['id'], dic_trans)
@@ -366,7 +407,7 @@ def write_to_es_transaction(df_t, epoch_id):
                                                       dic_trans['customer_id'],
                                                       dic_trans['datetime'],
                                                       predict_isfraud(dic_trans), #-----test after will be predected by ML
-                                                      value_dict_transaction['payload']['after']['id'],
+                                                      dic_trans['id'],
                                                       op_type,
                                                       formatted_date_es,
                                                      )], schema=schema_transaction)
