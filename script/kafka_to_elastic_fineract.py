@@ -308,7 +308,7 @@ def send_email(sender, recipient, subject, message):
     try:
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls()
-        server.login(smtp_username, smtp_password)"
+        server.login(smtp_username, smtp_password)
         server.sendmail(sender, recipient, msg.as_string())
         server.quit()
         print("Email sent successfully to admin!")
