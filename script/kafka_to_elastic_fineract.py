@@ -13,6 +13,8 @@ from elasticsearch.exceptions import RequestError
 
 import redis
 
+import requests
+
 import smtplib
 from email.mime.text import MIMEText
 
@@ -28,7 +30,7 @@ os.environ[
 ] = "--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.2,org.elasticsearch:elasticsearch-spark-30_2.12:7.16.2,com.fasterxml.jackson.module:jackson-module-scala_2.12:2.13.0 pyspark-shell"
 
 # create a Spark session
-spark = SparkSession.builder.appName("kafka_elastic_test1").getOrCreate()
+spark = SparkSession.builder.appName("kafka_elastic_ia_fineract").getOrCreate()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -306,12 +308,32 @@ def send_email(sender, recipient, subject, message):
     try:
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls()
-        server.login(smtp_username, smtp_password)
+        server.login(smtp_username, smtp_password)"
         server.sendmail(sender, recipient, msg.as_string())
         server.quit()
         print("Email sent successfully to admin!")
     except Exception as e:
         print("An error occurred while sending the email:", str(e))
+        
+def send_slack_alert(webhook_url, message, title):
+    payload = {
+        "icon_emoji": ":exclamation:",
+        "username": "AI Assistant Alert",
+        "attachments": [
+          {
+              "title": title,
+              "text": message,
+              "color": "danger"
+          }
+        ]
+    }
+
+    response = requests.post(webhook_url, json=payload)
+
+    if response.status_code == 200:
+        print("Message sent successfully to Slack.")
+    else:
+        print(f"Request to Slack returned an error: {response.status_code}, {response.text}")
 
 def send_alert(dic_trans):
 
@@ -319,8 +341,8 @@ def send_alert(dic_trans):
     sender = os.environ.get("sender")
     recipient = os.environ.get("recipient")
 
-    subject = ' Urgent: Potential Fraud Transaction Detected - Action Required'
-    message = 'Dear Admin,\n\nWe have detected a suspicious transaction on a user\'s account on {datetime}.\nYour immediate attention to this matter is required. Please review the details provided below:\n\nTransaction ID: {id}\nCustomer ID: {customer_id}\nAccount ID: {account_id}\nAmount: ${amount}\nDate: {datetime}.\n\nWe kindly request that you take immediate action to thoroughly investigate and address this issue to prevent any further fraudulent activity.\nYour prompt response is greatly appreciated.\n\nBest regards,\nApach Finracte'.format(
+    subject = 'Urgent: Potential Fraud Transaction Detected - Action Required'
+    message = "We have detected a suspicious transaction on a user\'s account on {datetime}.\nYour immediate attention to this matter is required.\nPlease review the details provided below:\n\nTransaction ID: {id}\nCustomer ID: {customer_id}\nAccount ID: {account_id}\nAmount: ${amount}\nDate: {datetime}.\n\nWe kindly request that you take immediate action to thoroughly investigate and address this issue to prevent any further fraudulent activity.\nYour prompt response is greatly appreciated.".format(
         datetime=dic_trans['datetime'],
         id=dic_trans['id'],
         customer_id=dic_trans['customer_id'],
@@ -328,6 +350,12 @@ def send_alert(dic_trans):
         amount=dic_trans['amount']
     )
 
+    # slack alert
+    slack_webhook_url = "https://hooks.slack.com/services/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"
+    # Send the danger alert to Slack
+    send_slack_alert(slack_webhook_url, message, subject)
+    
+    message = 'Dear Admin,\n\n' + message + '\n\nBest regards,\nApach Finracte'
     send_email(sender, recipient, subject, message)
 
 def predict_isfraud(dic_trans):  
@@ -363,7 +391,7 @@ def predict_isfraud(dic_trans):
         return "valid"
     else :
         # send alert to admin when fraud detected
-        send_alert(dic_trans)
+        #send_alert(dic_trans)
         return "fraudulent"
 
 def write_to_es_transaction(df_t, epoch_id):
@@ -402,7 +430,9 @@ def write_to_es_transaction(df_t, epoch_id):
             dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
 
             dic_trans['id'] = value_dict_transaction['payload']['after']['id']
-                
+            
+            is_fraud = predict_isfraud(dic_trans)
+            
             # save this transacton in redis
             add_transaction_to_history(dic_trans["id"], dic_trans)
                 
@@ -415,7 +445,7 @@ def write_to_es_transaction(df_t, epoch_id):
                     dic_trans["amount"],
                     dic_trans["customer_id"],
                     dic_trans["datetime"],
-                    predict_isfraud(dic_trans),  # -----test after will be predected by ML
+                    is_fraud,  # -----test after will be predected by ML
                     dic_trans["id"],
                     op_type,
                     formatted_date_es,
