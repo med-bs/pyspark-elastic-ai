@@ -1,8 +1,6 @@
 import os
 import json
 import datetime
-import base64
-import decimal
 import signal
 
 from time import sleep
@@ -30,7 +28,7 @@ os.environ[
 ] = "--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.2,org.elasticsearch:elasticsearch-spark-30_2.12:7.16.2,com.fasterxml.jackson.module:jackson-module-scala_2.12:2.13.0 pyspark-shell"
 
 # create a Spark session
-spark = SparkSession.builder.appName("kafka_elastic_ia_fineract").getOrCreate()
+spark = SparkSession.builder.appName("kafka_elastic_ia_test").getOrCreate()
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,14 +40,14 @@ password = os.environ.get("PASSWORD")
 # Create a Redis connection
 redis_host = os.environ.get("redis_host")
 redis_port = os.environ.get("redis_port")
-redis_db_tr = os.environ.get("redis_db_tr")
-redis_db_acc = os.environ.get("redis_db_acc")
+redis_db_tr = os.environ.get("redis_db_tr_test")
+redis_db_acc = os.environ.get("redis_db_acc_test")
 
 redis_client_tr = redis.Redis(host=redis_host, port=redis_port, db= redis_db_tr)
 redis_client_acc = redis.Redis(host=redis_host, port=redis_port, db= redis_db_acc)
 
 # Define the Elasticsearch index name
-es_index = os.environ.get("es_index")
+es_index = os.environ.get("es_index_test")
 es_port = int (os.environ.get("es_port"))
 es_host = os.environ.get("es_host")
 
@@ -93,8 +91,8 @@ signal.signal(signal.SIGINT, signal_handler)
 df_transaction_stream = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", "kafka:9092")
-    .option("subscribe", "dbserver1.fineract_default.m_savings_account_transaction")
-    .option("group.id", "1")
+    .option("subscribe", "dbserver3.ebank.account_operation")
+    .option("group.id", "2")
     .load()
 )
 
@@ -102,20 +100,21 @@ df_transaction_stream = (
 df_account_stream = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", "kafka:9092")
-    .option("subscribe", "dbserver1.fineract_default.m_savings_account")
+    .option("subscribe", "dbserver3.ebank.bank_account")
     .load()
 )
 
 # Define the schema for the DataFrame
 schema_transaction = StructType(
     [
-        StructField("account-id", LongType(), True),
+        StructField("account-id", StringType(), True),
         StructField("amount", DoubleType(), True),
         StructField("customer-id", LongType(), True),
         StructField("datetime", StringType(), True),
         StructField("is_fraud", StringType(), True),
         StructField("transaction-id", LongType(), True),
         StructField("type", StringType(), True),
+        StructField("account_type", StringType(), True),
         StructField("@timestamp", StringType(), True),
     ]
 )
@@ -123,7 +122,8 @@ schema_transaction = StructType(
 # Define the schema for the DataFrame
 schema_account = StructType([
     StructField("customer_id",  LongType(), True),
-    StructField("account_id", LongType(), True)
+    StructField("account_id", StringType(), True),
+    StructField("account_type", StringType(), True)
 ])
 
 account_df = spark.createDataFrame([(-1,-1),], schema=schema_account)
@@ -136,13 +136,14 @@ mapping = {
     "mappings": {
         "properties": {
             "@timestamp": {"type": "date"},
-            "account-id": {"type": "long"},
+            "account-id": {"type": "keyword"},
+            "account-type": {"type": "keyword"},
             "amount": {"type": "double"},
             "customer-id": {"type": "long"},
             "datetime": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"},
             "is_fraud": {"type": "keyword"},
             "transaction-id": {"type": "long"},
-            "type": {"type": "keyword"},
+            "transaction-type": {"type": "keyword"},
         }
     }
 }
@@ -238,20 +239,6 @@ def get_account_from_cache(key):
     # Create DataFrame from RDD
     return spark.createDataFrame(rdd)
 
-def getDecimalFromKafka(encoded):
-
-    # Decode the Base64 encoded string and create a BigInteger from it
-    decoded = decimal.Decimal(
-        int.from_bytes(base64.b64decode(encoded), byteorder="big", signed=False)
-    )
-
-    # Create a context object with the specified scale
-    context = decimal.Context(prec=28, rounding=decimal.ROUND_HALF_DOWN)
-
-    # Set the scale of the decimal value using the context object
-    decimal_value = decoded.quantize(decimal.Decimal(".1") ** 3, context=context)
-
-    return decimal_value / 1000000
 
 def get_ml_transaction_input_byIds(account_id, customer_id):
     dict_ml = {}
@@ -339,7 +326,7 @@ def send_alert(dic_trans):
 
     # Email addresses
     sender = os.environ.get("sender")
-    recipient = os.environ.get("recipient")
+    recipient = os.environ.get("recipient_test")
 
     subject = 'Urgent: Potential Fraud Transaction Detected - Action Required'
     message = "We have detected a suspicious transaction on a user\'s account on {datetime}.\nYour immediate attention to this matter is required.\nPlease review the details provided below:\n\nTransaction ID: {id}\nCustomer ID: {customer_id}\nAccount ID: {account_id}\nAmount: ${amount}\nDate: {datetime}.\n\nWe kindly request that you take immediate action to thoroughly investigate and address this issue to prevent any further fraudulent activity.\nYour prompt response is greatly appreciated.".format(
@@ -351,11 +338,11 @@ def send_alert(dic_trans):
     )
 
     # slack alert
-    slack_webhook_url = os.environ.get("slack_webhook_url")
+    slack_webhook_url = os.environ.get("slack_webhook_url_test")
     # Send the danger alert to Slack
     send_slack_alert(slack_webhook_url, message, subject)
     
-    message = 'Dear Admin,\n\n' + message + '\n\nBest regards,\nApach Finracte'
+    message = 'Dear Admin,\n\n' + message + '\n\nBest regards,\nEbank.'
     send_email(sender, recipient, subject, message)
 
 def predict_isfraud(dic_trans):  
@@ -391,7 +378,7 @@ def predict_isfraud(dic_trans):
         return "valid"
     else :
         # send alert to admin when fraud detected
-        send_alert(dic_trans)
+        #send_alert(dic_trans)
         return "fraudulent"
 
 def write_to_es_transaction(df_t, epoch_id):
@@ -405,14 +392,14 @@ def write_to_es_transaction(df_t, epoch_id):
             
         if value_dict_transaction['payload']['before'] == None :
                 
-            timestamp = value_dict_transaction['payload']['after']['created_date']/1000
+            timestamp = value_dict_transaction['payload']['after']['operation_date']
             # convert Unix timestamp to a datetime object
             dt = datetime.datetime.fromtimestamp(timestamp)
             # format datetime object as "yyyy-mm-dd hh:mm:ss"
             dic_trans['datetime'] = dt.strftime("%Y-%m-%d %H:%M:%S")
             formatted_date_es = dt.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         
-            dic_trans['account_id'] = value_dict_transaction['payload']['after']['savings_account_id']
+            dic_trans['account_id'] = value_dict_transaction['payload']['after']['bank_account_id']
         
             while account_df.filter(col("account_id") == dic_trans['account_id']).count() == 0:
                 # Wait for 0.01 second before checking again
@@ -424,15 +411,17 @@ def write_to_es_transaction(df_t, epoch_id):
             filtered_account_df = account_df.filter(account_df["account_id"] == dic_trans['account_id'])
             # Select the "customer-id" column from the filtered DataFrame
             dic_trans['customer_id'] = filtered_account_df.select("customer_id").collect()[0][0]
+            
+            dic_trans['account_type'] = filtered_account_df.select("account_type").collect()[0][0]
                 
-            op_type = "DEBIT" if value_dict_transaction['payload']['after']['transaction_type_enum'] == 2 else "CREDIT"  
+            dic_trans['op_type'] = value_dict_transaction['payload']['after']['type']
                 
             dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
 
             dic_trans['id'] = value_dict_transaction['payload']['after']['id']
             
             is_fraud = predict_isfraud(dic_trans)
-            
+
             # save this transacton in redis
             add_transaction_to_history(dic_trans["id"], dic_trans)
                 
@@ -447,7 +436,8 @@ def write_to_es_transaction(df_t, epoch_id):
                     dic_trans["datetime"],
                     is_fraud,  # -----test after will be predected by ML
                     dic_trans["id"],
-                    op_type,
+                    dic_trans["op_type"],
+                    dic_trans['account_type'],
                     formatted_date_es,
                     )],
                 schema=schema_transaction,
@@ -467,6 +457,7 @@ def write_to_es_account(df_a, epoch_id):
         value_dict_account = json.loads(row_account.value)
         dict_account['customer_id'] = value_dict_account['payload']['after']['client_id']
         dict_account['account_id'] = value_dict_account['payload']['after']['id']
+        dict_account['account_type'] = "Saving Account" if value_dict_account['payload']['after']['type'] == "SA" else "Current Account"
         
         # add account to cache
         add_account_to_cache(dict_account['account_id'], dict_account)
