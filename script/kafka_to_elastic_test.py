@@ -109,11 +109,12 @@ schema_transaction = StructType(
     [
         StructField("account-id", StringType(), True),
         StructField("amount", DoubleType(), True),
-        StructField("customer-id", LongType(), True),
-        StructField("datetime", StringType(), True),
+        StructField("Customer-id", LongType(), True),
+        StructField("operation-date", StringType(), True),
         StructField("is_fraud", StringType(), True),
         StructField("transaction-id", LongType(), True),
         StructField("type", StringType(), True),
+        StructField("transaction-description", StringType(), True),
         StructField("account_type", StringType(), True),
         StructField("@timestamp", StringType(), True),
     ]
@@ -126,7 +127,7 @@ schema_account = StructType([
     StructField("account_type", StringType(), True)
 ])
 
-account_df = spark.createDataFrame([(-1,-1),], schema=schema_account)
+account_df = spark.createDataFrame([(-1,-1,""),], schema=schema_account)
 
 dic_trans = {}
 
@@ -136,14 +137,15 @@ mapping = {
     "mappings": {
         "properties": {
             "@timestamp": {"type": "date"},
+            "Customer-id": {"type": "long"},
             "account-id": {"type": "keyword"},
             "account-type": {"type": "keyword"},
             "amount": {"type": "double"},
-            "customer-id": {"type": "long"},
-            "datetime": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"},
             "is_fraud": {"type": "keyword"},
+            "operation-date": {"type": "date", "format": "yyyy-MM-dd HH:mm:ss"},
+            "transaction-description": {"type": "keyword"},
             "transaction-id": {"type": "long"},
-            "transaction-type": {"type": "keyword"},
+            "type": {"type": "keyword"},
         }
     }
 }
@@ -368,7 +370,7 @@ def predict_isfraud(dic_trans):
         ml_input_var['account_id_count_1week'],
         ml_input_var['account_id_count_1month'],
         ml_input_var['account_id_count_3month'],
-        dic_trans['in_weekend'], dic_trans['at_night']
+        is_weekend(dic_trans['datetime']), is_night(dic_trans['datetime'])
     ])
 
     data_vect = spark.createDataFrame([(dense_vector, ), ], ['features'])
@@ -392,7 +394,7 @@ def write_to_es_transaction(df_t, epoch_id):
             
         if value_dict_transaction['payload']['before'] == None :
                 
-            timestamp = value_dict_transaction['payload']['after']['operation_date']
+            timestamp = value_dict_transaction['payload']['after']['operation_date']/1000000 -3600
             # convert Unix timestamp to a datetime object
             dt = datetime.datetime.fromtimestamp(timestamp)
             # format datetime object as "yyyy-mm-dd hh:mm:ss"
@@ -416,17 +418,16 @@ def write_to_es_transaction(df_t, epoch_id):
                 
             dic_trans['op_type'] = value_dict_transaction['payload']['after']['type']
                 
-            dic_trans['amount'] = float(getDecimalFromKafka(value_dict_transaction['payload']['after']['amount']))
+            dic_trans['amount'] = value_dict_transaction['payload']['after']['amount']
+            
+            dic_trans['description'] = value_dict_transaction['payload']['after']['description']
 
             dic_trans['id'] = value_dict_transaction['payload']['after']['id']
             
-            is_fraud = predict_isfraud(dic_trans)
-
             # save this transacton in redis
             add_transaction_to_history(dic_trans["id"], dic_trans)
-                
-            dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
-            dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
+            
+            is_fraud = predict_isfraud(dic_trans)
                 
             new_row_transaction = spark.createDataFrame(
                 [(
@@ -437,6 +438,7 @@ def write_to_es_transaction(df_t, epoch_id):
                     is_fraud,  # -----test after will be predected by ML
                     dic_trans["id"],
                     dic_trans["op_type"],
+                    dic_trans['description'],
                     dic_trans['account_type'],
                     formatted_date_es,
                     )],

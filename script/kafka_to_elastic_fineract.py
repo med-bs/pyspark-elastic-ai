@@ -381,7 +381,7 @@ def predict_isfraud(dic_trans):
         ml_input_var['account_id_count_1week'],
         ml_input_var['account_id_count_1month'],
         ml_input_var['account_id_count_3month'],
-        dic_trans['in_weekend'], dic_trans['at_night']
+        is_weekend(dic_trans['datetime']), is_night(dic_trans['datetime'])
     ])
 
     data_vect = spark.createDataFrame([(dense_vector, ), ], ['features'])
@@ -431,13 +431,9 @@ def write_to_es_transaction(df_t, epoch_id):
 
             dic_trans['id'] = value_dict_transaction['payload']['after']['id']
             
-            is_fraud = predict_isfraud(dic_trans)
-            
             # save this transacton in redis
             add_transaction_to_history(dic_trans["id"], dic_trans)
-                
-            dic_trans['in_weekend'] = is_night(dic_trans['datetime'])
-            dic_trans['at_night'] = is_weekend(dic_trans['datetime'])
+            is_fraud = predict_isfraud(dic_trans)
                 
             new_row_transaction = spark.createDataFrame(
                 [(
